@@ -72,6 +72,7 @@ task        = -1
 clusterType = -1
 nCores      =  4
 yearTarget  = "-1"
+nTot = 1
 
 
 class Clusters:
@@ -497,15 +498,18 @@ def nltkClustering(vectors, nrClusters):
 
     import nltk
     from nltk.cluster import KMeansClusterer
+    from sklearn import metrics
 
     num_clusters = nrClusters
     kclusterer = KMeansClusterer(num_clusters, 
         distance = nltk.cluster.util.cosine_distance,
         #  distance = nltk.cluster.util.euclidean_distance,
-        repeats = 1000)
+        repeats = 25)
     labels = kclusterer.cluster(vectors, assign_clusters=True)
+    score = metrics.silhouette_score(vectors, labels, metric="euclidean")
+    print("Silhouette score (nc = ", nrClusters, " ) = ", score )
 
-    return labels
+    return labels, score
 
 def hierarchicalClustering(distanceMatrix, withDendrogram=False):
     """ 
@@ -542,12 +546,12 @@ def hierarchicalClustering(distanceMatrix, withDendrogram=False):
     # repeat with best method
     Z = linkage(distArray, method=bestMethod)
     #  Z = linkage(distArray, method=bestMethod, optimal_ordering=True)
-    #  print(Z)
+    print(Z)
     # note: The Z gives the distances at which each cluster was merged
 
     # get the cluster for each point
     #  maxD   = 0.95
-    maxD   = 0.15
+    maxD   = 0.5
     labels = fcluster(Z, maxD, criterion="distance")
     labels = labels - [1]*len(labels)  #  start from 0
 
@@ -674,7 +678,6 @@ def clusteringAlgorithm(year, clusterType=1):
 
     # read distance matrix from disk
     tagList, distMatrix = readDistanceMatrix(year)
-    print(tagList)
 
     # apply clustering algorithm on distMatrix
     clusterType = "1"
@@ -685,13 +688,17 @@ def clusteringAlgorithm(year, clusterType=1):
         vectors = [modelDoc2Vec.docvecs[str(i)] for i in tagList]
         print("## Starting with NLTK Clustering ")
         start = timer()
-        myClusters.labels = nltkClustering(vectors, nrClusters = 4)
+        silhouette_score = []
+        for nc in range(2,50):
+            myClusters.labels, score = nltkClustering(vectors, nrClusters = nc)
+            silhouette_score.append(score)
         print("... Done in {0:5.2f} seconds.\n".format(timer() - start))
+        print(silhouette_score)
 
-    print("LABELS ARE = ", myClusters.labels)
+    #  print("LABELS ARE = ", myClusters.labels)
     myClusters.updateClusterInfo()
     myClusters.createSetsFromLabels()
-    myClusters.printSets()
+    #  myClusters.printSets()
 
     # This uses Multidimensional Scaling (works only if distMatrix is
     # symmetric)
@@ -708,6 +715,52 @@ def clusteringAlgorithm(year, clusterType=1):
     create3dChart(myClusters.centers, embed3d, myClusters.labels, tagList,
     year)
 
+def loadDoc2VecModel(year):
+
+    dirFull = path.join(prefix,perDayFolders,year)
+    fullname = dirFull + "/doc2vec.model." + year
+    print("Loading model ", fullname)
+    modelDoc2Vec = doc2vec.Doc2Vec.load(fullname)
+    print("The model contains {0} vectors.".format(len(modelDoc2Vec.docvecs)))
+
+    return modelDoc2Vec
+
+
+def clusterPerCik():
+
+    model = loadDoc2VecModel(str(2015))
+    dfMap, file2tag, tag2file = createMaps()
+    dTop = dfMap.groupby(["cik"]).size().sort_values(ascending=False).head(n=nTot)
+    ciks = dTop.keys()
+
+    for comp in ciks:
+        vecs = []
+        tagList = []
+        print("Working with company ", comp)
+        rows = dfMap.groupby(["cik"]).get_group(comp)
+
+        count = 0
+        for tag, year in zip(rows["tag"], rows["year"]):
+            count += 1
+            print("tag  =", tag, " and year = ", year)
+            #  vv = model.docvecs[str(tag)]
+            #  vecs.append(vv)
+            tagList.append(tag)
+
+        # compute distance matrix for this company
+        nDocs = len(tagList)
+        distMatrix = [ [0.0 for i in range(nDocs)] for j in range(nDocs)]
+        for i in range(nDocs):
+            tag_i = tagList[i]
+            for j in range(i, nDocs):
+                tag_j = tagList[j]
+                distMatrix[i][j] = round(1.0-model.docvecs.similarity(str(tag_i),str(tag_j)), 4)
+                distMatrix[j][i] = distMatrix[i][j]
+
+        print("done with distance matrix ")
+
+    return tagList, distMatrix
+
 
 
 def main(argv):
@@ -716,6 +769,10 @@ def main(argv):
     '''
     parseCommandLine(argv)
     summary(task, clusterType, yearTarget)
+
+    tagList, distanceMatrix = clusterPerCik()
+    hierarchicalClustering(distanceMatrix, withDendrogram=True)
+    exit(123)
 
     if task == "0":
         folderStructure()
